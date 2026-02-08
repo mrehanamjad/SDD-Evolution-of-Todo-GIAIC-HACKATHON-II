@@ -75,6 +75,3 @@ coverage/
 # Pnpm
 pnpm-store/
 .pnpm-debug.log
-
-
-backend/pyproject.toml
