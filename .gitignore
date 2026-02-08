@@ -77,11 +77,3 @@ pnpm-store/
 .pnpm-debug.log
 
 
-backend/
-frontend/
-specs/1-ai-todo-chatbot
-specs/002-auth-todo-fullstack
-history/prompts/general
-history/prompts/ai-todo-chatbot
-history/prompts/002-auth-todo-fullstack
-history/adr

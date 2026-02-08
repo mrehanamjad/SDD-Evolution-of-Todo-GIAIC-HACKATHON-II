@@ -1,0 +1,320 @@
+"""
+AI Agent for Todo Chatbot
+Implements the OpenAI Agent that integrates with MCP tools
+"""
+from openai import OpenAI
+import os
+from typing import Dict, Any, List
+import json
+from dotenv import load_dotenv  # Added: Load environment variables
+
+# Load environment variables from .env file immediately
+load_dotenv()
+
+# Import MCP tools (Assuming these are in a local module named mcp.tools)
+from mcp.tools import (
+    add_task,
+    list_tasks,
+    complete_task,
+    update_task,
+    delete_task,
+    AddTaskArguments,
+    ListTasksArguments,
+    CompleteTaskArguments,
+    UpdateTaskArguments,
+    DeleteTaskArguments
+)
+
+def get_client():
+    """
+    Get OpenAI client configured for Groq
+    """
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY environment variable is not set")
+        
+    return OpenAI(
+        api_key=api_key,
+        base_url="https://api.groq.com/openai/v1"
+    )
+
+def initialize_todo_agent():
+    """
+    Initialize the OpenAI agent with MCP tools
+    """
+    # Define the tools available to the agent
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "add_task",
+                "description": "Add a new task for a user",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Task title"},
+                        "description": {"type": "string", "description": "Task description (optional)"}
+                    },
+                    "required": ["title"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_tasks",
+                "description": "List tasks for a user with optional status filtering",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "description": "Filter by status: 'all', 'pending', or 'completed'", "enum": ["all", "pending", "completed"]}
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "complete_task",
+                "description": "Mark a task as completed",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "integer", "description": "ID of the task to complete"}
+                    },
+                    "required": ["task_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "update_task",
+                "description": "Update task title or description",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "integer", "description": "ID of the task to update"},
+                        "title": {"type": "string", "description": "New task title (optional)"},
+                        "description": {"type": "string", "description": "New task description (optional)"}
+                    },
+                    "required": ["task_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_task",
+                "description": "Delete a task",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {"type": "integer", "description": "ID of the task to delete"}
+                    },
+                    "required": ["task_id"]
+                }
+            }
+        }
+    ]
+
+    return tools
+
+
+def process_chat_message(user_id: str, message: str, conversation_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+    """
+    Process a chat message using the OpenAI agent with MCP tools
+    """
+    if conversation_history is None:
+        conversation_history = []
+
+    # Initialize tools
+    tools = initialize_todo_agent()
+
+    # Prepare the conversation messages
+    system_prompt = {
+        "role": "system",
+        "content": "You are a helpful AI assistant that helps users manage their todo tasks. "
+                  "Use the available tools to add, list, update, complete, or delete tasks. "
+                  "Always confirm actions with the user in a friendly manner. "
+                  "If a user's request is ambiguous, lacks required information, or contains meaningless text (like 'xyz', 'ok ok', 'abc'), ask for clarification BEFORE using tools. "
+                  "For example, if someone says 'add task xyz' or 'add task ok ok', ask them to provide a meaningful task title. "
+                  "Do not attempt to use tools with placeholder, meaningless, or unclear titles. "
+                  "Instead, engage in a conversation to understand what the user really wants to accomplish."
+    }
+    
+    messages = [system_prompt]
+
+    # Add conversation history if available
+    for msg in conversation_history:
+        messages.append({
+            "role": msg.get("role", "user"),
+            "content": msg.get("content", "")
+        })
+
+    # Add the current user message
+    messages.append({
+        "role": "user",
+        "content": message
+    })
+
+    # Call the Groq API with tools
+    client = get_client()
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+    )
+
+    # Extract the response
+    response_message = response.choices[0].message
+    tool_calls = response_message.tool_calls
+
+    # Debug logging
+    print(f"DEBUG: User message: {message}")
+    print(f"DEBUG: Agent response: {response_message}")
+    print(f"DEBUG: Tool calls: {tool_calls}")
+
+    # Check if the message intent suggests a CRUD operation but no tool was called
+    message_lower = message.lower()
+    crud_keywords = ["add", "create", "delete", "remove", "edit", "update", "complete", "finish", "done"]
+    has_crud_intent = any(keyword in message_lower for keyword in crud_keywords)
+
+    print(f"DEBUG: Has CRUD intent: {has_crud_intent}, Tool calls exist: {bool(tool_calls)}")
+
+    if has_crud_intent and not tool_calls:
+        # Force tool usage by retrying with a stricter system prompt
+        strict_system_prompt = {
+            "role": "system",
+            "content": "You are a helpful AI assistant that helps users manage their todo tasks. "
+                      "USE THE AVAILABLE TOOLS to add, list, update, complete, or delete tasks. "
+                      "If the user wants to add, create, delete, edit, update, complete, or remove a task, "
+                      "YOU MUST USE THE APPROPRIATE TOOL. Do not respond without using tools for these operations."
+        }
+
+        # Reconstruct messages with the stricter system prompt
+        strict_messages = [strict_system_prompt]
+        for msg in conversation_history:
+            strict_messages.append({
+                "role": msg.get("role", "user"),
+                "content": msg.get("content", "")
+            })
+        strict_messages.append({
+            "role": "user",
+            "content": message
+        })
+
+        # Retry with stricter prompt
+        print(f"DEBUG: Retrying with stricter prompt due to CRUD intent without tool calls")
+        strict_response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=strict_messages,
+            tools=tools,
+            tool_choice="auto",
+        )
+
+        response_message = strict_response.choices[0].message
+        tool_calls = response_message.tool_calls
+
+        # Debug logging after retry
+        print(f"DEBUG: After retry - Agent response: {response_message}")
+        print(f"DEBUG: After retry - Tool calls: {tool_calls}")
+
+    # Process tool calls if any
+    if tool_calls:
+        # ---------------------------------------------------------
+        # CRITICAL FIX: Add the assistant's message (requesting the tool) 
+        # to the history BEFORE adding the tool results.
+        # ---------------------------------------------------------
+        messages.append(response_message)
+        
+        tool_results = []
+        print(f"DEBUG: Processing {len(tool_calls)} tool calls")
+        
+        for tool_call in tool_calls:
+            function_name = tool_call.function.name
+            function_args = json.loads(tool_call.function.arguments)
+            print(f"DEBUG: Executing tool '{function_name}' with args: {function_args}")
+
+            # Map function names to actual functions
+            function_map = {
+                "add_task": lambda args: add_task(AddTaskArguments(**args), user_id),
+                "list_tasks": lambda args: list_tasks(ListTasksArguments(**args), user_id),
+                "complete_task": lambda args: complete_task(CompleteTaskArguments(**args), user_id),
+                "update_task": lambda args: update_task(UpdateTaskArguments(**args), user_id),
+                "delete_task": lambda args: delete_task(DeleteTaskArguments(**args), user_id),
+            }
+
+            if function_name in function_map:
+                try:
+                    result = function_map[function_name](function_args)
+                    print(f"DEBUG: Tool '{function_name}' executed successfully, result: {result}")
+                    tool_results.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": json.dumps(result),
+                    })
+                except ValueError as e:
+                    # Handle validation errors (like meaningless titles)
+                    if "not meaningful" in str(e):
+                        clarification_needed = {
+                            "error": f"{str(e)}. Please ask the user to provide a meaningful task title.",
+                            "need_clarification": True
+                        }
+                        tool_results.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": json.dumps(clarification_needed),
+                        })
+                        print(f"DEBUG: Meaningless title detected, requesting clarification: {str(e)}")
+                    else:
+                        print(f"DEBUG: Error executing tool '{function_name}': {str(e)}")
+                        tool_results.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": json.dumps({"error": str(e)}),
+                        })
+                except Exception as e:
+                    print(f"DEBUG: Error executing tool '{function_name}': {str(e)}")
+                    tool_results.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": json.dumps({"error": str(e)}),
+                    })
+            else:
+                print(f"DEBUG: Unknown function: {function_name}")
+                tool_results.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": json.dumps({"error": f"Unknown function: {function_name}"}),
+                })
+
+        # If there were tool results, get the final response
+        if tool_results:
+            # Add tool results to messages
+            messages.extend(tool_results)
+
+            # Get the final response from the assistant
+            final_client = get_client()
+            final_response = final_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+            )
+
+            assistant_reply = final_response.choices[0].message.content
+        else:
+            assistant_reply = response_message.content
+    else:
+        assistant_reply = response_message.content
+
+    # Return the response and tool calls for logging
+    return {
+        "response": assistant_reply,
+        "tool_calls": [tc.model_dump() for tc in tool_calls] if tool_calls else [],
+    }
