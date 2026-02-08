@@ -70,8 +70,6 @@ SQLAlchemy==2.0.46
 sqlmodel==0.0.32
 sse-starlette==3.2.0
 starlette==0.52.1
-# Editable install with no version control (todo-backend==0.1.0)
--e /home/rehan/codes/GIAIC/test/todo-console-app-001-todo-console-app/backend
 tomlkit==0.13.3
 tqdm==4.67.3
 typer==0.21.1
